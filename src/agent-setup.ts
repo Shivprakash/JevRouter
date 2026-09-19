@@ -7,7 +7,7 @@ import { providerConfiguration } from "./runtime.js";
 import type { KeyName } from "./runtime.js";
 
 export type AgentTarget = "codex" | "claude" | "all";
-export type AgentProvider = "typesafe" | "openrouter";
+export type AgentProvider = "typesafe" | "openrouter" | "vercel" | "dual";
 export interface AgentSetupOptions { withMcp?: boolean }
 export interface AgentSetupResult {
   agent: "codex" | "claude";

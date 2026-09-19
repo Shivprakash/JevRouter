@@ -151,6 +151,174 @@ export class OpenRouterJevProvider implements JevProvider {
   }
 }
 
+
+/** Vercel AI Gateway evaluation adapter for Jev (`typesafe-ai/jev`).
+ * Wire format uses AI SDK evaluation types: boolean (noul), choice, score.
+ * POST {baseURL}/evaluation-model with model id header. */
+export class VercelJevProvider implements JevProvider {
+  readonly name: string;
+  private readonly baseURL: string;
+  private readonly model: string;
+  private readonly timeoutMs: number;
+
+  constructor(
+    private readonly apiKey: string,
+    options: { baseURL?: string; model?: string; timeoutMs?: number } = {},
+  ) {
+    this.baseURL = (options.baseURL ?? process.env.AI_GATEWAY_BASE_URL ?? "https://ai-gateway.vercel.sh/v4/ai").replace(/\/$/, "");
+    this.model = options.model ?? process.env.JEV_MODEL ?? "typesafe-ai/jev";
+    this.timeoutMs = options.timeoutMs ?? 20_000;
+    this.name = `vercel-ai-gateway:${this.model}`;
+  }
+
+  async decide(request: JevRouteRequest): Promise<JevRawResponse> {
+    const questions = toVercelQuestions(buildQuestions(request));
+    const response = await fetch(`${this.baseURL}/evaluation-model`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+        // Required by Vercel AI Gateway (AI SDK createGateway default headers).
+        "ai-gateway-protocol-version": "0.0.1",
+        "ai-gateway-auth-method": "api-key",
+        "ai-evaluation-model-specification-version": "4",
+        "ai-model-id": this.model,
+      },
+      body: JSON.stringify({ state: request.state, questions }),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    }).catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new JevProviderError("jev_timeout", `Vercel AI Gateway timed out after ${this.timeoutMs}ms`);
+      }
+      throw new JevProviderError("jev_http_error", error instanceof Error ? error.message : String(error));
+    });
+    if (response.status === 401 || response.status === 403) {
+      const body = (await response.text()).slice(0, 300);
+      const billing =
+        /credit card|billing|payment method|add a card/i.test(body)
+          ? " (AI Gateway billing locked — add a card at vercel.com AI Gateway settings)"
+          : "";
+      throw new JevProviderError(
+        "jev_auth_error",
+        `Vercel AI Gateway rejected the request (${response.status})${billing}${body ? `: ${body}` : ""}`,
+        response.status,
+      );
+    }
+    if (!response.ok) {
+      throw new JevProviderError(
+        "jev_http_error",
+        `Vercel AI Gateway returned HTTP ${response.status}: ${(await response.text()).slice(0, 240)}`,
+        response.status,
+      );
+    }
+    const envelope = (await response.json()) as Record<string, unknown>;
+    const answers = envelope.answers;
+    if (!answers || typeof answers !== "object") {
+      throw new JevProviderError("jev_malformed_response", "Vercel evaluation response has no answers");
+    }
+    return {
+      model: this.model,
+      answers: fromVercelAnswers(answers as Record<string, unknown>),
+      usage: normalizeUsage(envelope.usage),
+      _vercel: { provider: "vercel-ai-gateway", model: this.model, providerMetadata: envelope.providerMetadata },
+    };
+  }
+}
+
+/** Try primary, then fallback on auth/http/timeout errors. */
+export class DualJevProvider implements JevProvider {
+  readonly name: string;
+  constructor(
+    private readonly primary: JevProvider,
+    private readonly fallback: JevProvider,
+  ) {
+    this.name = `dual:${primary.name}|${fallback.name}`;
+  }
+
+  async decide(request: JevRouteRequest): Promise<JevRawResponse> {
+    try {
+      const raw = await this.primary.decide(request);
+      return { ...raw, _dual: { used: "primary", primary: this.primary.name, fallback: this.fallback.name } };
+    } catch (error) {
+      if (!(error instanceof JevProviderError)) throw error;
+      if (!["jev_auth_error", "jev_http_error", "jev_timeout"].includes(error.code)) throw error;
+      const raw = await this.fallback.decide(request);
+      return {
+        ...raw,
+        _dual: {
+          used: "fallback",
+          primary: this.primary.name,
+          fallback: this.fallback.name,
+          primary_error: { code: error.code, message: error.message, status: error.status },
+        },
+      };
+    }
+  }
+}
+
+function toVercelQuestions(questions: Record<string, Record<string, unknown>>): Record<string, Record<string, unknown>> {
+  return Object.fromEntries(
+    Object.entries(questions).map(([key, question]) => {
+      if (question.type === "noul") {
+        const mapped: Record<string, unknown> = {
+          type: "boolean",
+          instructions: question.instructions,
+        };
+        if (question.criteria !== undefined) mapped.criteria = question.criteria;
+        return [key, mapped];
+      }
+      return [key, question];
+    }),
+  );
+}
+
+function fromVercelAnswers(answers: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(answers).map(([key, value]) => {
+      if (!value || typeof value !== "object") return [key, value];
+      const answer = value as Record<string, unknown>;
+      if (answer.type === "boolean") {
+        const probability = typeof answer.probability === "number" ? answer.probability : Number(answer.probability);
+        return [key, { type: "noul", noul: probability }];
+      }
+      if (answer.type === "choice") {
+        const probabilities = (answer.probabilities as Record<string, number> | undefined) ?? {};
+        const values = Object.values(probabilities).filter((n) => typeof n === "number");
+        const confidence =
+          typeof answer.confidence === "number"
+            ? answer.confidence
+            : values.length
+              ? Math.max(...values)
+              : 0;
+        return [key, { type: "choice", choice: answer.choice, probabilities, confidence }];
+      }
+      if (answer.type === "score") {
+        return [
+          key,
+          {
+            type: "score",
+            score: answer.score,
+            probabilities: answer.probabilities,
+            confidence: typeof answer.confidence === "number" ? answer.confidence : 1,
+            legend: answer.legend,
+          },
+        ];
+      }
+      return [key, value];
+    }),
+  );
+}
+
+function normalizeUsage(usage: unknown): Record<string, unknown> | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const u = usage as Record<string, unknown>;
+  return {
+    input_tokens: u.inputTokens ?? u.input_tokens,
+    output_tokens: u.outputTokens ?? u.output_tokens,
+    ...u,
+  };
+}
+
 /** Persistent local cache keyed by the exact provider input and candidate snapshot. */
 export class CachedJevProvider implements JevProvider {
   readonly name: string;
