@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CapabilityRegistry, defaultPolicy, loadPolicyFile, normalizeCapability } from "./manifest.js";
+import { CapabilityRegistry, defaultPolicy, loadPolicyFile, normalizeCapability, resolveCapabilitiesDir } from "./manifest.js";
 import { discoverMcpConfig } from "./mcp.js";
 import { discoverClis, discoverDsh, discoverSkills } from "./discovery.js";
 import { JevRouter } from "./router.js";
@@ -17,7 +17,7 @@ import { probeJev, runPlanRequest, runRouteRequest } from "./route-command.js";
 import { ensureAgentCredentials } from "./credentials.js";
 
 const root = process.cwd();
-const registry = new CapabilityRegistry(join(root, ".jevrouter", "capabilities"));
+const registry = new CapabilityRegistry(resolveCapabilitiesDir({ cwd: root }));
 
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
