@@ -1,7 +1,59 @@
-import { copyFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { existsSync, readdirSync } from "node:fs";
+import { copyFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import { parse } from "yaml";
 import type { CapabilityManifest, CapabilityVerification, RiskLevel, RouterPolicy } from "./types.js";
+
+const manifestExtensions = new Set([".json", ".yaml", ".yml"]);
+
+/**
+ * Resolve the capabilities directory an agent should read from.
+ *
+ * Precedence:
+ *   1. an explicit `--capabilities <dir>` CLI flag
+ *   2. `JEVROUTER_CAPABILITIES` env var
+ *   3. `<cwd>/.jevrouter/capabilities`, but only if it holds a manifest
+ *   4. the machine-wide registry at `~/.config/lm/capabilities`
+ *
+ * This avoids binding the registry to `process.cwd()`, which otherwise
+ * makes every spawned MCP server read an empty per-repo directory instead
+ * of the shared machine registry.
+ *
+ * Step 3 requires a manifest rather than just the directory. Earlier builds
+ * created `.jevrouter/capabilities` as a side effect of reading it, so those
+ * empty directories are scattered across repos. Accepting them would shadow
+ * the machine registry with nothing in exactly the repos agents work in.
+ */
+export function resolveCapabilitiesDir(options: { argv?: string[]; env?: NodeJS.ProcessEnv; cwd?: string } = {}): string {
+  const argv = options.argv ?? process.argv.slice(2);
+  const env = options.env ?? process.env;
+  const cwd = options.cwd ?? process.cwd();
+
+  const flagIndex = argv.indexOf("--capabilities");
+  if (flagIndex >= 0) {
+    const value = argv[flagIndex + 1];
+    if (value && !value.startsWith("--")) return resolve(cwd, value);
+  }
+
+  if (env.JEVROUTER_CAPABILITIES) return resolve(cwd, env.JEVROUTER_CAPABILITIES);
+
+  const local = join(cwd, ".jevrouter", "capabilities");
+  if (holdsManifest(local)) return local;
+
+  return join(homedir(), ".config", "lm", "capabilities");
+}
+
+function holdsManifest(dir: string): boolean {
+  if (!existsSync(dir)) return false;
+  try {
+    return readdirSync(dir, { withFileTypes: true }).some((entry) =>
+      entry.isDirectory() ? holdsManifest(join(dir, entry.name)) : manifestExtensions.has(extname(entry.name)),
+    );
+  } catch {
+    return false;
+  }
+}
 
 const capabilityTypes = new Set(["skill", "mcp_tool", "cli", "dsh", "model", "subagent"]);
 const riskLevels = new Set(["low", "medium", "high", "critical"]);
@@ -140,15 +192,52 @@ export class CapabilityRegistry {
     return destination;
   }
 
+  /** Manifest paths skipped by the most recent {@link list} call because they failed to parse. */
+  skippedFiles: string[] = [];
+
   async list(): Promise<CapabilityManifest[]> {
-    await this.ensure();
-    const names = (await readdir(this.directory)).filter((name) => [".json", ".yaml", ".yml"].includes(extname(name).toLowerCase()));
+    this.skippedFiles = [];
+    let paths: string[];
+    try {
+      paths = await this.collectManifestPaths(this.directory);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
     const manifests: CapabilityManifest[] = [];
-    for (const name of names.sort()) {
-      const path = join(this.directory, name);
-      if ((await stat(path)).isFile()) manifests.push(await loadManifestFile(path));
+    const seen = new Set<string>();
+    for (const path of paths.sort()) {
+      let manifest: CapabilityManifest;
+      try {
+        manifest = await loadManifestFile(path);
+      } catch {
+        this.skippedFiles.push(path);
+        continue;
+      }
+      if (seen.has(manifest.id)) continue;
+      seen.add(manifest.id);
+      manifests.push(manifest);
     }
     return manifests.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /** Recursively find candidate manifest files, skipping aggregate/private files. */
+  private async collectManifestPaths(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const paths: string[] = [];
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        paths.push(...(await this.collectManifestPaths(full)));
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!manifestExtensions.has(extname(entry.name).toLowerCase())) continue;
+      if (entry.name.startsWith("_")) continue;
+      if (entry.name === "candidates.json") continue;
+      paths.push(full);
+    }
+    return paths;
   }
 }
 

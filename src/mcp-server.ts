@@ -70,7 +70,7 @@ async function callTool(message: JsonRpcMessage, options: McpServerOptions): Pro
   const name = typeof params.name === "string" ? params.name : "";
   const args = asObject(params.arguments);
   if (name === "jev_capabilities") {
-    return toolResult(message.id, await options.registry.list());
+    return toolResult(message.id, { capabilities: await options.registry.list() });
   }
   if (name !== "jev_route") return { jsonrpc: "2.0", id: message.id ?? null, error: { code: -32602, message: `Unknown tool: ${name}` } };
   if (typeof args.request !== "string" || !args.request.trim()) {
@@ -109,9 +109,14 @@ function toolDefinitions() {
 }
 
 function toolResult(id: string | number | null | undefined, value: unknown): JsonRpcResponse {
+  // The MCP spec requires structuredContent to be a JSON object. Callers that
+  // hand back an array (or any other non-object) get wrapped here so schema
+  // validation on the client side does not fail; the text payload always
+  // carries the original, unwrapped value.
+  const structuredContent = isRecord(value) ? value : { items: value };
   return result(id, {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
-    structuredContent: value,
+    structuredContent,
     isError: false,
   });
 }
