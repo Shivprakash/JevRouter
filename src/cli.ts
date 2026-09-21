@@ -207,8 +207,8 @@ async function agent(args: string[]): Promise<void> {
   const target = (option(args, "--agent") ?? "all") as "codex" | "claude" | "cursor" | "all";
   if (!["codex", "claude", "cursor", "all"].includes(target)) throw new Error("--agent must be codex, claude, cursor, or all");
   if (action === "start" && target === "all") throw new Error("agent start requires --agent codex, --agent claude, or --agent cursor");
-  const provider = option(args, "--provider") as "typesafe" | "openrouter" | undefined;
-  if (provider !== undefined && !["typesafe", "openrouter"].includes(provider)) throw new Error("--provider must be typesafe or openrouter");
+  const provider = option(args, "--provider") as "typesafe" | "openrouter" | "vercel" | "dual" | undefined;
+  if (provider !== undefined && !["typesafe", "openrouter", "vercel", "dual"].includes(provider)) throw new Error("--provider must be typesafe, openrouter, vercel, or dual");
   if (action === "doctor") {
     const results = await doctorAgents(target, root, provider);
     const live = args.includes("--live") ? await probeJev(provider, m => console.error(m)) : null;
@@ -274,20 +274,24 @@ Commands:
   capability list
   discover [--skills <dir>] [--mcp <mcp.json>] [--cli git,docker] [--dsh <dir-or-file>]
   decision show <decision-id>
-  route --stdin | --request "..." [--candidates-file ./candidates.json] [--candidates JSON] [--input '{"query":"..."}'] [--actor-permissions read,write] [--provider demo|typesafe|openrouter]
+  route --stdin | --request "..." [--candidates-file ./candidates.json] [--candidates JSON] [--input '{"query":"..."}'] [--actor-permissions read,write] [--provider demo|typesafe|openrouter|vercel|dual]
   plan --stdin | --request "..." [--candidates-file ./candidates.json] [--candidates JSON] [--steps 5] [--mode batch|serial]
        [--sequence argmax|beam] [--diversity-penalty 1.0] [--group-by server|type] [--decompose rule] [--thread-context]
-       [--state-detail names|targets] [--provider demo|typesafe|openrouter]
-  serve [--port 8787] [--provider demo|typesafe|openrouter]
+       [--state-detail names|targets] [--provider demo|typesafe|openrouter|vercel|dual]
+  serve [--port 8787] [--provider demo|typesafe|openrouter|vercel|dual]
   dashboard [--port 8788]  local read-only receipt dashboard (no Jev key required)
-  serve-mcp [--provider demo|typesafe|openrouter]  stdio MCP server for Agents
-  agent setup [--agent codex|claude|cursor|all] [--provider typesafe|openrouter] [--skip-check] [--with-mcp]
+  serve-mcp [--provider demo|typesafe|openrouter|vercel|dual]  stdio MCP server for Agents
+  agent setup [--agent codex|claude|cursor|all] [--provider typesafe|openrouter|vercel|dual] [--skip-check] [--with-mcp]
   agent start --agent codex|claude|cursor [--request "..."]  check Jev, install Skill, launch host
   agent doctor [--agent codex|claude|cursor|all] [--live]   configuration check; optional real Jev probe
 
 Environment:
   TYPESAFE_API_KEY or JEV_API_KEY   official Jev API key
   OPENROUTER_API_KEY                OpenRouter Jev endpoint
+  AI_GATEWAY_API_KEY                Vercel AI Gateway key (model typesafe-ai/jev)
+  AI_GATEWAY_BASE_URL               default https://ai-gateway.vercel.sh/v4/ai
+  JEV_ROUTER_PROVIDER               typesafe|openrouter|vercel|dual|demo
+  JEV_ROUTER_PRIMARY / _FALLBACK    dual pair (default vercel + openrouter)
   JEV_API_URL                        override the official endpoint
 `);
 }

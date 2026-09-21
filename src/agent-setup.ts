@@ -7,7 +7,7 @@ import { providerConfiguration } from "./runtime.js";
 import type { KeyName } from "./runtime.js";
 
 export type AgentTarget = "codex" | "claude" | "cursor" | "all";
-export type AgentProvider = "typesafe" | "openrouter";
+export type AgentProvider = "typesafe" | "openrouter" | "vercel" | "dual";
 
 export const AGENT_HOST_COMMANDS: Record<"codex" | "claude" | "cursor", readonly string[]> = {
   codex: ["codex"],
@@ -36,6 +36,7 @@ export function resolveHostCommand(target: "codex" | "claude" | "cursor", env: N
   }
   return commands[0];
 }
+
 export interface AgentSetupOptions { withMcp?: boolean }
 export interface AgentSetupResult {
   agent: "codex" | "claude" | "cursor";

@@ -7,7 +7,7 @@ export interface RouteOptions {
   candidates?: CapabilityInput[];
   capabilityDir?: string;
   apiKey?: string;
-  provider?: "typesafe" | "openrouter" | "demo";
+  provider?: "typesafe" | "openrouter" | "vercel" | "dual" | "demo";
   endpoint?: string;
   model?: string;
   policy?: RouterPolicy;

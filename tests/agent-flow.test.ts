@@ -84,7 +84,7 @@ test('no key, empty candidates, malformed input and rejected credentials fail vi
   }
   const missing = run(cwd, ['route', '--stdin'], JSON.stringify(task), environment());
   assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /Missing JEV_API_KEY/);
+  assert.match(missing.stderr, /Missing TYPESAFE_API_KEY or JEV_API_KEY/);
   const denied = run(cwd, ['agent', 'setup'], undefined, environment({ JEV_API_KEY: 'wrong' }));
   assert.equal(denied.status, 1);
   await assert.rejects(stat(join(cwd, 'AGENTS.md')), { code: 'ENOENT' });
