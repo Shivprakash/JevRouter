@@ -11,10 +11,11 @@ import { createProvider } from "./runtime.js";
 import { saveDecision } from "./store.js";
 import type { CapabilityManifest, RouteInput } from "./types.js";
 import { startMcpServer } from "./mcp-server.js";
-import { doctorAgents, setupAgents } from "./agent-setup.js";
+import { doctorAgents, resolveHostCommand, setupAgents } from "./agent-setup.js";
 import { parse } from "yaml";
 import { probeJev, runPlanRequest, runRouteRequest } from "./route-command.js";
 import { ensureAgentCredentials } from "./credentials.js";
+import { startDashboardServer } from "./dashboard.js";
 
 const root = process.cwd();
 const registry = new CapabilityRegistry(resolveCapabilitiesDir({ cwd: root }));
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
     if (command === "route") return await route(rest);
     if (command === "plan") return await plan(rest);
     if (command === "serve") return await serve(rest);
+    if (command === "dashboard") return await dashboard(rest);
     if (command === "serve-mcp") return await serveMcp(rest);
     if (command === "agent") return await agent(rest);
     printHelp();
@@ -173,7 +175,7 @@ async function serve(args: string[]): Promise<void> {
       if (request.method === "POST" && request.url === "/route") {
         const payload = JSON.parse(await readBody(request)) as RouteInput;
         if (!payload.request || typeof payload.request !== "string") return sendJson(response, 400, { error: "request is required" });
-        const candidates = payload.candidates?.map((candidate, index) => normalizeCapability(candidate, `request.candidates[${index}]`)) ?? await registry.list();
+        const candidates = payload.candidates?.map((candidate, index) => normalizeCapability(candidate, `request.candidates[${index}]`, message => console.error(message))) ?? await registry.list();
         const result = await new JevRouter(provider, policy).route(payload, candidates);
         await saveDecision(result);
         return sendJson(response, 200, result);
@@ -186,6 +188,14 @@ async function serve(args: string[]): Promise<void> {
   server.listen(port, "127.0.0.1", () => console.log(`JevRouter listening at http://127.0.0.1:${port}`));
 }
 
+async function dashboard(args: string[]): Promise<void> {
+  const port = Number(option(args, "--port") ?? 8788);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("--port must be between 1 and 65535");
+  const server = await startDashboardServer(root, port);
+  console.log(`JevRouter dashboard at http://127.0.0.1:${port}`);
+  await new Promise<void>((resolve) => server.once("close", resolve));
+}
+
 async function serveMcp(args: string[]): Promise<void> {
   const policy = await loadPolicyFile(option(args, "--policy") ?? join(root, ".jevrouter", "policy.json"));
   await startMcpServer({ registry, policy, provider: createProvider(option(args, "--provider")) });
@@ -193,10 +203,10 @@ async function serveMcp(args: string[]): Promise<void> {
 
 async function agent(args: string[]): Promise<void> {
   const action = args[0];
-  if (!["setup", "doctor", "start"].includes(action)) throw new Error("usage: jevrouter agent setup|doctor|start [--agent codex|claude|all]");
-  const target = (option(args, "--agent") ?? "all") as "codex" | "claude" | "all";
-  if (!["codex", "claude", "all"].includes(target)) throw new Error("--agent must be codex, claude, or all");
-  if (action === "start" && target === "all") throw new Error("agent start requires --agent codex or --agent claude");
+  if (!["setup", "doctor", "start"].includes(action)) throw new Error("usage: jevrouter agent setup|doctor|start [--agent codex|claude|cursor|all]");
+  const target = (option(args, "--agent") ?? "all") as "codex" | "claude" | "cursor" | "all";
+  if (!["codex", "claude", "cursor", "all"].includes(target)) throw new Error("--agent must be codex, claude, cursor, or all");
+  if (action === "start" && target === "all") throw new Error("agent start requires --agent codex, --agent claude, or --agent cursor");
   const provider = option(args, "--provider") as "typesafe" | "openrouter" | undefined;
   if (provider !== undefined && !["typesafe", "openrouter"].includes(provider)) throw new Error("--provider must be typesafe or openrouter");
   if (action === "doctor") {
@@ -210,13 +220,15 @@ async function agent(args: string[]): Promise<void> {
   const check = args.includes("--skip-check") ? null : await probeJev(resolvedProvider, m => console.error(m));
   const results = await setupAgents(target, root, resolvedProvider, { withMcp: args.includes("--with-mcp") });
   console.log(JSON.stringify({ status: "installed", check, files: results }, null, 2));
-  console.error("JevRouter READY. Use $jevrouter in Codex or /jevrouter in Claude Code. Keep the key exported in the Agent environment. Setup does not route later tasks by itself.");
+  console.error("JevRouter READY. Use $jevrouter in Codex, /jevrouter in Claude Code, or @jevrouter in Cursor. Keep the key exported in the Agent environment. Setup does not route later tasks by itself.");
   if (action === "start") {
+    if (target === "all") throw new Error("agent start requires --agent codex, --agent claude, or --agent cursor");
     const prompt = option(args, "--request");
     const hostArgs = prompt ? ["--", prompt] : [];
+    const command = resolveHostCommand(target);
     console.error(`JevRouter START host=${target} (key inherited; no key stored)`);
     process.exitCode = await new Promise<number>((resolve, reject) => {
-      const child = spawn(target, hostArgs, { cwd: root, env: process.env, stdio: "inherit", shell: false });
+      const child = spawn(command, hostArgs, { cwd: root, env: process.env, stdio: "inherit", shell: false });
       child.once("error", () => reject(new Error(`${target} is not installed or could not start. Skill installed; launch the host after installing it.`)));
       child.once("exit", code => resolve(code ?? 1));
     });
@@ -267,10 +279,11 @@ Commands:
        [--sequence argmax|beam] [--diversity-penalty 1.0] [--group-by server|type] [--decompose rule] [--thread-context]
        [--state-detail names|targets] [--provider demo|typesafe|openrouter]
   serve [--port 8787] [--provider demo|typesafe|openrouter]
+  dashboard [--port 8788]  local read-only receipt dashboard (no Jev key required)
   serve-mcp [--provider demo|typesafe|openrouter]  stdio MCP server for Agents
-  agent setup [--agent codex|claude|all] [--provider typesafe|openrouter] [--skip-check] [--with-mcp]
-  agent start --agent codex|claude [--request "..."]  check Jev, install Skill, launch host
-  agent doctor [--agent codex|claude|all] [--live]   configuration check; optional real Jev probe
+  agent setup [--agent codex|claude|cursor|all] [--provider typesafe|openrouter] [--skip-check] [--with-mcp]
+  agent start --agent codex|claude|cursor [--request "..."]  check Jev, install Skill, launch host
+  agent doctor [--agent codex|claude|cursor|all] [--live]   configuration check; optional real Jev probe
 
 Environment:
   TYPESAFE_API_KEY or JEV_API_KEY   official Jev API key
