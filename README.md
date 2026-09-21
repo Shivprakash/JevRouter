@@ -13,7 +13,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[Quickstart](#quickstart) · [Benchmark](#benchmark) · [Cookbook](docs/cookbook/README.md) · [Documentation](#documentation) · [中文](#中文介绍)
+[Website](https://www.jevrouter.co/) · [Quickstart](#quickstart) · [Benchmark](#benchmark) · [Cookbook](docs/cookbook/README.md) · [Documentation](#documentation) · [中文](#中文介绍)
 
 </div>
 
@@ -30,6 +30,8 @@ The key contract is simple: **Jev owns the decision probabilities; JevRouter own
 - **Every surface** — models, subagents, Skills, MCP tools, CLIs, DSH plugins share one routing contract.
 - **Receipts by default** — append-only decision/plan files with provenance hashes; what was decided, why, and at what confidence is always auditable.
 - **Capability trust is explicit** — discovered and caller-supplied candidates carry verification status; strict projects can set `require_verified_candidates` to prevent unverified descriptions from being selected.
+
+![JevRouter Architecture](docs/assets/jevrouter-architecture.png)
 
 ## Benchmark
 
@@ -54,7 +56,7 @@ Node.js 20+ required. JevRouter accepts either the official Jev API or an OpenRo
 npx --yes github:BillionsBobby/JevRouter agent start --agent codex
 ```
 
-Choose `typesafe` for the official Jev API or `openrouter` at the prompt, then paste the corresponding key. The key stays in the current process environment and is never written to project files. For Claude Code use `--agent claude`. To install without launching a host, export `TYPESAFE_API_KEY`, `JEV_API_KEY`, or `OPENROUTER_API_KEY` first and use `agent setup`; to verify later, use `agent doctor` (`--live` adds a small paid probe):
+Choose `typesafe` for the official Jev API or `openrouter` at the prompt, then paste the corresponding key. The key stays in the current process environment and is never written to project files. For Claude Code use `--agent claude`, and for Cursor use `--agent cursor`. To install without launching a host, export `TYPESAFE_API_KEY`, `JEV_API_KEY`, or `OPENROUTER_API_KEY` first and use `agent setup`; to verify later, use `agent doctor` (`--live` adds a small paid probe):
 
 ```bash
 npx --yes github:BillionsBobby/JevRouter agent setup          # Skill + project instructions only
@@ -106,6 +108,7 @@ Task-oriented recipes, each with exact commands and expected output:
 | [Custom candidates & discovery](docs/cookbook/06-custom-candidates.md) | manifest contract, OpenAI tool shapes, `discover` |
 | [Policy, risk & confirmation](docs/cookbook/07-policy-and-confirmation.md) | `policy.json`, confidence gates, `no_decision`, permissions |
 | [Offline, caching & receipts](docs/cookbook/08-offline-and-caching.md) | demo provider, cache control, provenance, receipts |
+| [Local dashboard](docs/cookbook/09-local-dashboard.md) | read-only routing statistics and effect boundary |
 
 ## How it works
 
@@ -125,11 +128,21 @@ Single decisions go through one Jev Choice call. When `single_stage_max_candidat
 
 Strategy knobs: `sequence: "beam"` + `diversity_penalty` (joint sequence search with a repetition penalty), `thread_context` (plan context in each decomposed step), `group_by` (hierarchical server/type routing), `state_detail: "targets"`, `plan_hint`. Every step remains a full routing decision with per-step policy, fallback and raw responses. Plans are append-only receipts in `.jevrouter/plans/`. Details and measurements: [cookbook #2](docs/cookbook/02-multi-step-plans.md).
 
+## Local dashboard
+
+The MVP dashboard reads `.jevrouter/decisions/` and `.jevrouter/plans/` locally. It makes no Jev request and uploads no data:
+
+```bash
+npx jevrouter dashboard
+```
+
+Open `http://127.0.0.1:8788` to see routing counts, status/source/provider breakdowns, latency percentiles, selected capabilities, plan steps, and recent decisions. Execution outcome is shown as **not collected** until the host writes execution feedback, so a selected capability is never presented as a completed task.
+
 ## Interfaces
 
 | Interface | Entry | Notes |
 |---|---|---|
-| CLI | `route`, `plan`, `discover`, `decision show`, `serve`, `agent` | stdout is one JSON object; exit 0 = selected, 2 = review/no-decision, 1 = error |
+| CLI | `route`, `plan`, `discover`, `decision show`, `serve`, `dashboard`, `agent` | stdout is one JSON object; exit 0 = selected, 2 = review/no-decision, 1 = error |
 | SDK | `route()`, `plan()` | candidates inline or from the local registry |
 | HTTP | `serve --port 8787` | `POST /route`, `GET /capabilities`, `GET /health` |
 | MCP | `serve-mcp` | one `jev_route` tool for MCP-native agents; never executes implicitly |
@@ -205,6 +218,7 @@ When Jev selects a filtered candidate, the router can choose the highest-probabi
 - Decision-only is the only mode; no CLI, Skill, MCP or DSH action runs implicitly.
 - Medium/high/critical capabilities require confirmation by default.
 - Missing permissions, unavailable capabilities and disallowed risk levels are hard filters.
+- An inline candidate (`{ name, description }`, no `id`) keeps any `risk`, `policy` and `permissions` it declares; only `verification`, `availability`, `execution` and `metadata` are decided by JevRouter, and supplying one of those prints a line on stderr naming it. An inline candidate that declares nothing is still `low` risk, as before.
 - API keys are read from environment variables and never written to manifests or decision files.
 - Candidate provenance is separate from Jev probability; an unverified description can be visible for review without being treated as a verified host capability.
 - Decision files are append-only; rerunning a route creates a new decision ID.
@@ -246,6 +260,14 @@ npx --yes github:BillionsBobby/JevRouter agent start --agent codex
 ```
 
 命令会安全询问使用官方 Jev API 还是 OpenRouter，并隐藏输入 Key。更多示例见 [Cookbook](docs/cookbook/README.md)。
+
+本地看板只读取 `.jevrouter/decisions/` 和 `.jevrouter/plans/`，不调用 Jev，也不上传数据：
+
+```bash
+npx jevrouter dashboard
+```
+
+打开 `http://127.0.0.1:8788` 查看路由统计、延迟、能力选择、计划步骤和最近决策。宿主没有回传执行结果时，页面会明确显示“未采集”，不会把选中能力误报为任务完成。
 
 </details>
 
