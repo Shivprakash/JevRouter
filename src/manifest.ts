@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { copyFile, mkdir, readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
@@ -13,12 +13,17 @@ const manifestExtensions = new Set([".json", ".yaml", ".yml"]);
  * Precedence:
  *   1. an explicit `--capabilities <dir>` CLI flag
  *   2. `JEVROUTER_CAPABILITIES` env var
- *   3. `<cwd>/.jevrouter/capabilities`, but only if it already exists
+ *   3. `<cwd>/.jevrouter/capabilities`, but only if it holds a manifest
  *   4. the machine-wide registry at `~/.config/lm/capabilities`
  *
  * This avoids binding the registry to `process.cwd()`, which otherwise
  * makes every spawned MCP server read an empty per-repo directory instead
  * of the shared machine registry.
+ *
+ * Step 3 requires a manifest rather than just the directory. Earlier builds
+ * created `.jevrouter/capabilities` as a side effect of reading it, so those
+ * empty directories are scattered across repos. Accepting them would shadow
+ * the machine registry with nothing in exactly the repos agents work in.
  */
 export function resolveCapabilitiesDir(options: { argv?: string[]; env?: NodeJS.ProcessEnv; cwd?: string } = {}): string {
   const argv = options.argv ?? process.argv.slice(2);
@@ -34,9 +39,20 @@ export function resolveCapabilitiesDir(options: { argv?: string[]; env?: NodeJS.
   if (env.JEVROUTER_CAPABILITIES) return resolve(cwd, env.JEVROUTER_CAPABILITIES);
 
   const local = join(cwd, ".jevrouter", "capabilities");
-  if (existsSync(local)) return local;
+  if (holdsManifest(local)) return local;
 
   return join(homedir(), ".config", "lm", "capabilities");
+}
+
+function holdsManifest(dir: string): boolean {
+  if (!existsSync(dir)) return false;
+  try {
+    return readdirSync(dir, { withFileTypes: true }).some((entry) =>
+      entry.isDirectory() ? holdsManifest(join(dir, entry.name)) : manifestExtensions.has(extname(entry.name)),
+    );
+  } catch {
+    return false;
+  }
 }
 
 const capabilityTypes = new Set(["skill", "mcp_tool", "cli", "dsh", "model", "subagent"]);

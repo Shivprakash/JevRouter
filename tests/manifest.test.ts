@@ -91,14 +91,28 @@ test("resolveCapabilitiesDir falls back to JEVROUTER_CAPABILITIES env var", () =
   assert.equal(dir, "/tmp/env-caps");
 });
 
-test("resolveCapabilitiesDir uses <cwd>/.jevrouter/capabilities only if it already exists", async () => {
+test("resolveCapabilitiesDir uses <cwd>/.jevrouter/capabilities only if it holds a manifest", async () => {
   const cwd = await tempDir();
-  const withoutLocalDir = resolveCapabilitiesDir({ argv: [], env: {}, cwd });
-  assert.equal(withoutLocalDir, join(homedir(), ".config", "lm", "capabilities"));
+  const local = join(cwd, ".jevrouter", "capabilities");
+  const machine = join(homedir(), ".config", "lm", "capabilities");
 
-  await mkdir(join(cwd, ".jevrouter", "capabilities"), { recursive: true });
-  const withLocalDir = resolveCapabilitiesDir({ argv: [], env: {}, cwd });
-  assert.equal(withLocalDir, join(cwd, ".jevrouter", "capabilities"));
+  assert.equal(resolveCapabilitiesDir({ argv: [], env: {}, cwd }), machine);
+
+  await mkdir(local, { recursive: true });
+  assert.equal(resolveCapabilitiesDir({ argv: [], env: {}, cwd }), machine);
+
+  await writeFile(join(local, "example.json"), "{}", "utf8");
+  assert.equal(resolveCapabilitiesDir({ argv: [], env: {}, cwd }), local);
+});
+
+test("resolveCapabilitiesDir finds a manifest nested in a per-kind subdirectory", async () => {
+  const cwd = await tempDir();
+  const local = join(cwd, ".jevrouter", "capabilities");
+  await mkdir(join(local, "skills"), { recursive: true });
+  assert.equal(resolveCapabilitiesDir({ argv: [], env: {}, cwd }), join(homedir(), ".config", "lm", "capabilities"));
+
+  await writeFile(join(local, "skills", "example.yaml"), "id: x", "utf8");
+  assert.equal(resolveCapabilitiesDir({ argv: [], env: {}, cwd }), local);
 });
 
 test("resolveCapabilitiesDir defaults to the machine-wide registry under ~/.config/lm/capabilities", () => {
